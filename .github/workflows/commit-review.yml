@@ -1,0 +1,103 @@
+name: Commit Review
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  commit-review:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Install Claude Code
+        run: npm install -g @anthropic-ai/claude-code@latest
+
+      - name: Review commit with Claude
+        id: review
+        env:
+          AWS_BEARER_TOKEN_BEDROCK: ${{ secrets.AWS_BEARER_TOKEN_BEDROCK }}
+          AWS_REGION: us-east-1
+          CLAUDE_CODE_USE_BEDROCK: "1"
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          COMMIT_MSG="${{ github.event.head_commit.message }}"
+          echo "short_sha=$SHORT_SHA" >> $GITHUB_OUTPUT
+
+          # Skip review for workflow-only or doc-only changes
+          CHANGED=$(git diff HEAD~1 --name-only 2>/dev/null || echo "")
+          if ! echo "$CHANGED" | grep -qvE '\.github/|\.md$'; then
+            echo "Skipping review — only workflow/doc changes"
+            echo "skip=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          DIFF=$(git diff HEAD~1)
+          echo "Reviewing commit $SHORT_SHA..."
+
+          REVIEW=$(claude --print --max-turns 5 --model ${{ vars.REVIEW_CLAUDE_MODEL || 'us.anthropic.claude-sonnet-4-6' }} \
+            "Review this Go git diff for security vulnerabilities, bugs, and anti-patterns. Be concise. If no issues, say 'No issues found.' Do NOT suggest creating issues or PRs — just give the review.
+
+          Pay attention to: error handling, resource leaks, race conditions, input validation, idiomatic Go.
+
+          Commit: $SHORT_SHA
+          Message: $COMMIT_MSG
+
+          $DIFF") || true
+
+          echo "--- Review output ---"
+          echo "$REVIEW"
+          echo "--- End review ---"
+
+          # Check for critical findings
+          if echo "$REVIEW" | grep -qiE "critical|vulnerability|injection|hardcoded.*(secret|password|key)|RCE|remote code execution"; then
+            echo "Critical findings detected — creating issue"
+            ISSUE_URL=$(gh issue create \
+              --title "🔍 Review finding in $SHORT_SHA" \
+              --body "## Commit Review: \`$SHORT_SHA\`
+
+          **Message:** $COMMIT_MSG
+          **Author:** ${{ github.actor }}
+
+          ---
+
+          $REVIEW" \
+              --label "review-finding" 2>&1)
+            echo "issue_url=$ISSUE_URL" >> $GITHUB_OUTPUT
+            echo "critical=true" >> $GITHUB_OUTPUT
+            echo "$REVIEW" > /tmp/review.txt
+          else
+            echo "No critical findings"
+            echo "critical=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Notify Telegram
+        if: steps.review.outputs.critical == 'true' && secrets.TELEGRAM_BOT_TOKEN != '' && secrets.TELEGRAM_CHAT_ID != ''
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          SHORT_SHA="${{ steps.review.outputs.short_sha }}"
+          ISSUE_URL="${{ steps.review.outputs.issue_url }}"
+          REPO="${{ github.repository }}"
+
+          MSG="🔍 *Code Review Finding*
+
+          *Repo:* \`${REPO}\`
+          *Commit:* \`${SHORT_SHA}\` by ${{ github.actor }}
+          *Message:* ${{ github.event.head_commit.message }}
+
+          Claude found critical issues in this commit and created an issue:
+          ${ISSUE_URL}"
+
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d chat_id="${TELEGRAM_CHAT_ID}" \
+            -d text="${MSG}" \
+            -d parse_mode="Markdown" \
+            -d disable_web_page_preview="true"
