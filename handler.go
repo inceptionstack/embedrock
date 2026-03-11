@@ -7,30 +7,26 @@ import (
 	"strings"
 )
 
-// Handler is the HTTP handler for the embedding proxy.
+const defaultModel = "amazon.titan-embed-text-v2:0"
+
+// Handler serves the OpenAI-compatible embedding API.
 type Handler struct {
 	embedder     Embedder
 	defaultModel string
 }
 
-// NewHandler creates a new embedding proxy handler.
+// NewHandler creates a handler with the default model name.
 func NewHandler(embedder Embedder) *Handler {
-	return &Handler{
-		embedder:     embedder,
-		defaultModel: "amazon.titan-embed-text-v2:0",
-	}
+	return &Handler{embedder: embedder, defaultModel: defaultModel}
 }
 
-// NewHandlerWithModel creates a handler with a specific default model.
+// NewHandlerWithModel creates a handler with a specific default model name.
+// The model name appears in health checks and responses when the client omits it.
 func NewHandlerWithModel(embedder Embedder, model string) *Handler {
-	return &Handler{
-		embedder:     embedder,
-		defaultModel: model,
-	}
+	return &Handler{embedder: embedder, defaultModel: model}
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// CORS
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
@@ -42,31 +38,21 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	path := strings.TrimSuffix(r.URL.Path, "/")
 
-	// Health check: GET /
-	if r.Method == http.MethodGet && (path == "" || path == "/") {
+	switch {
+	case r.Method == http.MethodGet && (path == "" || path == "/"):
 		h.handleHealth(w)
-		return
-	}
-
-	// Embeddings: POST /v1/embeddings
-	if path == "/v1/embeddings" {
-		if r.Method != http.MethodPost {
-			h.writeError(w, http.StatusMethodNotAllowed, "method not allowed", "invalid_request")
-			return
-		}
+	case path == "/v1/embeddings" && r.Method == http.MethodPost:
 		h.handleEmbeddings(w, r)
-		return
+	case path == "/v1/embeddings":
+		h.writeError(w, http.StatusMethodNotAllowed, "method not allowed", "invalid_request")
+	default:
+		h.writeError(w, http.StatusNotFound, "not found", "invalid_request")
 	}
-
-	h.writeError(w, http.StatusNotFound, "not found", "invalid_request")
 }
 
 func (h *Handler) handleHealth(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(HealthResponse{
-		Status: "ok",
-		Model:  h.defaultModel,
-	})
+	json.NewEncoder(w).Encode(HealthResponse{Status: "ok", Model: h.defaultModel})
 }
 
 func (h *Handler) handleEmbeddings(w http.ResponseWriter, r *http.Request) {
@@ -76,19 +62,17 @@ func (h *Handler) handleEmbeddings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Try to parse as batch (array input) or single (string input)
-	inputs, model, err := h.parseInput(body)
+	inputs, model, err := parseInput(body)
 	if err != nil {
 		h.writeError(w, http.StatusBadRequest, err.Error(), "invalid_request")
 		return
 	}
-
 	if model == "" {
 		model = h.defaultModel
 	}
 
-	// Generate embeddings
 	data := make([]EmbeddingData, 0, len(inputs))
+	promptTokens := 0
 	for i, text := range inputs {
 		embedding, err := h.embedder.Embed(text)
 		if err != nil {
@@ -100,11 +84,6 @@ func (h *Handler) handleEmbeddings(w http.ResponseWriter, r *http.Request) {
 			Index:     i,
 			Embedding: embedding,
 		})
-	}
-
-	// Calculate rough token count
-	promptTokens := 0
-	for _, text := range inputs {
 		promptTokens += len(text)
 	}
 
@@ -113,16 +92,13 @@ func (h *Handler) handleEmbeddings(w http.ResponseWriter, r *http.Request) {
 		Object: "list",
 		Data:   data,
 		Model:  model,
-		Usage: Usage{
-			PromptTokens: promptTokens,
-			TotalTokens:  promptTokens,
-		},
+		Usage:  Usage{PromptTokens: promptTokens, TotalTokens: promptTokens},
 	})
 }
 
-// parseInput handles both single string and array input formats.
-func (h *Handler) parseInput(body []byte) ([]string, string, error) {
-	// Try batch first (array input)
+// parseInput extracts text inputs and model from an OpenAI-format request body.
+func parseInput(body []byte) ([]string, string, error) {
+	// Try batch (array input)
 	var batch EmbeddingRequestBatch
 	if err := json.Unmarshal(body, &batch); err == nil && len(batch.Input) > 0 {
 		return batch.Input, batch.Model, nil
@@ -134,7 +110,7 @@ func (h *Handler) parseInput(body []byte) ([]string, string, error) {
 		return []string{single.Input}, single.Model, nil
 	}
 
-	// Try raw JSON with input as generic
+	// Fallback: raw JSON with generic input field
 	var raw map[string]interface{}
 	if err := json.Unmarshal(body, &raw); err != nil {
 		return nil, "", err
@@ -170,9 +146,6 @@ func (h *Handler) writeError(w http.ResponseWriter, status int, message, errType
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(ErrorResponse{
-		Error: ErrorDetail{
-			Message: message,
-			Type:    errType,
-		},
+		Error: ErrorDetail{Message: message, Type: errType},
 	})
 }

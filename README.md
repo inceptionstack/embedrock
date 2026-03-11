@@ -4,13 +4,26 @@ OpenAI-compatible embedding proxy for Amazon Bedrock. Drop-in replacement for an
 
 ## Why?
 
-Many AI tools (OpenClaw, LangChain, LlamaIndex, etc.) expect OpenAI's embedding API format. embedrock translates those calls to Amazon Bedrock, so you can use Titan Embed, Cohere Embed, and other Bedrock models without changing your tools.
+Many AI tools (OpenClaw, LangChain, LlamaIndex, etc.) expect OpenAI's embedding API format. embedrock translates those calls to Amazon Bedrock, so you can use Titan, Cohere, and other Bedrock embedding models without changing your tools.
 
 Zero API keys needed — uses your AWS credentials (instance profile, env vars, or shared config).
+
+## Supported Models
+
+| Model | ID | Dims | Notes |
+|-------|-----|------|-------|
+| Titan Embed Text V2 | `amazon.titan-embed-text-v2:0` | 1024 | Default |
+| Titan Embed G1 Text | `amazon.titan-embed-g1-text-02` | 1536 | |
+| Cohere Embed English v3 | `cohere.embed-english-v3` | 1024 | |
+| Cohere Embed Multilingual v3 | `cohere.embed-multilingual-v3` | 1024 | |
+| **Cohere Embed v4** | `cohere.embed-v4:0` | 1536 | Latest, best quality |
+
+Model family is auto-detected by ID prefix. Titan and Cohere use different Bedrock request/response formats — embedrock handles this transparently.
 
 ## Install
 
 **From releases:**
+
 ```bash
 # Linux arm64 (EC2 Graviton)
 curl -fsSL https://github.com/inceptionstack/embedrock/releases/latest/download/embedrock-linux-arm64 -o /usr/local/bin/embedrock
@@ -22,6 +35,7 @@ chmod +x /usr/local/bin/embedrock
 ```
 
 **From source:**
+
 ```bash
 go install github.com/inceptionstack/embedrock/cmd/embedrock@latest
 ```
@@ -31,6 +45,9 @@ go install github.com/inceptionstack/embedrock/cmd/embedrock@latest
 ```bash
 # Default: localhost:8089, us-east-1, Titan Embed v2
 embedrock
+
+# Cohere Embed v4 (recommended for best quality)
+embedrock --model cohere.embed-v4:0
 
 # Custom config
 embedrock --port 9090 --region eu-west-1 --model cohere.embed-english-v3
@@ -42,12 +59,14 @@ embedrock --help
 ## API
 
 **Health check:**
+
 ```bash
 curl http://127.0.0.1:8089/
 # {"status":"ok","model":"amazon.titan-embed-text-v2:0"}
 ```
 
 **Single embedding:**
+
 ```bash
 curl -X POST http://127.0.0.1:8089/v1/embeddings \
   -H "Content-Type: application/json" \
@@ -55,6 +74,7 @@ curl -X POST http://127.0.0.1:8089/v1/embeddings \
 ```
 
 **Batch embeddings:**
+
 ```bash
 curl -X POST http://127.0.0.1:8089/v1/embeddings \
   -H "Content-Type: application/json" \
@@ -72,7 +92,7 @@ After=network.target
 [Service]
 Type=simple
 User=ec2-user
-ExecStart=/usr/local/bin/embedrock --port 8089 --region us-east-1
+ExecStart=/usr/local/bin/embedrock --port 8089 --region us-east-1 --model cohere.embed-v4:0
 Restart=always
 RestartSec=5
 
@@ -95,7 +115,7 @@ sudo systemctl start embedrock
     "baseUrl": "http://127.0.0.1:8089/v1/",
     "apiKey": "not-needed"
   },
-  "model": "amazon.titan-embed-text-v2:0",
+  "model": "cohere.embed-v4:0",
   "query": {
     "hybrid": { "enabled": true, "vectorWeight": 0.7, "textWeight": 0.3 }
   }
@@ -106,6 +126,19 @@ sudo systemctl start embedrock
 
 - AWS credentials with `bedrock:InvokeModel` permission
 - Bedrock model access enabled for your chosen embedding model
+
+## Development
+
+```bash
+# Run tests
+go test ./... -v
+
+# Build
+go build ./cmd/embedrock/
+
+# Build with version info
+go build -ldflags "-X main.version=v0.2.0" ./cmd/embedrock/
+```
 
 ## Architecture
 

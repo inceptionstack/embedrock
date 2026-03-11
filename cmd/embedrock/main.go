@@ -31,7 +31,7 @@ func main() {
 
 	emb, err := embedrock.NewBedrockEmbedder(*region, *model)
 	if err != nil {
-		log.Fatalf("Failed to create Bedrock embedder: %v", err)
+		log.Fatalf("Failed to create embedder: %v", err)
 	}
 
 	handler := embedrock.NewHandlerWithModel(emb, *model)

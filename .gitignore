@@ -1,4 +1,6 @@
 /embedrock
 /dist/
 *.exe
-embedrock-linux-arm64
+embedrock-linux-*
+embedrock-darwin-*
+coverage.out

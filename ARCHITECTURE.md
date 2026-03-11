@@ -6,84 +6,90 @@ embedrock is an OpenAI-compatible embedding proxy for Amazon Bedrock. It transla
 
 ```
 ┌─────────────┐     POST /v1/embeddings      ┌─────────────┐     InvokeModel      ┌─────────────┐
-│  OpenClaw   │ ──────────────────────────►  │  embedrock  │ ──────────────────►  │   Bedrock   │
-│  (or any    │  { input: "text",            │  (Go binary) │  { inputText: ... } │   Runtime   │
-│   client)   │    model: "titan..." }       │  port 8089   │                     │             │
-│             │ ◄──────────────────────────  │             │ ◄──────────────────  │             │
-│             │  { data: [{ embedding }] }   │             │  { embedding: [...] }│             │
+│   Client     │ ──────────────────────────►  │  embedrock  │ ──────────────────►  │   Bedrock   │
+│  (OpenClaw,  │  { input: "text",            │  (Go binary) │  Titan or Cohere    │   Runtime   │
+│  LangChain)  │    model: "..." }            │  port 8089   │  format (auto)      │             │
+│              │ ◄──────────────────────────  │              │ ◄──────────────────  │             │
+│              │  { data: [{ embedding }] }   │              │  model response     │             │
 └─────────────┘                               └─────────────┘                     └─────────────┘
+```
+
+## File Structure
+
+```
+embedrock/
+├── cmd/embedrock/main.go   # CLI entry point (flags, server startup)
+├── types.go                # Embedder interface, OpenAI types, errors
+├── bedrock.go              # BedrockEmbedder (Titan + Cohere formats)
+├── handler.go              # HTTP handler (routing, parsing, responses)
+├── mock_test.go            # MockEmbedder (test helper)
+├── bedrock_test.go         # Model detection tests
+├── handler_test.go         # HTTP handler tests (16 tests)
+├── go.mod / go.sum         # Dependencies
+├── .github/workflows/      # CI + release automation
+├── README.md               # User docs
+└── ARCHITECTURE.md         # This file
 ```
 
 ## Components
 
-### `types.go` — Data Types
-All OpenAI-compatible request/response types, the `Embedder` interface, and error types. This is the contract layer.
+### `types.go` — Contracts
 
-- **`Embedder` interface** — single method `Embed(text string) ([]float64, error)`. Everything depends on this interface, making the Bedrock implementation swappable.
-- **`MockEmbedder`** — test double implementing `Embedder` with configurable behavior.
-- **Request types** — `EmbeddingRequest` (single string input) and `EmbeddingRequestBatch` (array input), matching OpenAI's API.
+The shared type layer. No logic, just shapes.
+
+- **`Embedder` interface** — `Embed(text string) ([]float64, error)`. The only abstraction boundary. Everything depends on this.
+- **Request types** — `EmbeddingRequest` (single) and `EmbeddingRequestBatch` (array), matching OpenAI's API.
 - **Response types** — `EmbeddingResponse`, `EmbeddingData`, `Usage` — exact OpenAI format.
-
-### `handler.go` — HTTP Handler
-The core HTTP server logic. Implements `http.Handler` so it can be used with any Go HTTP server or test harness.
-
-- **`GET /`** — Health check, returns `{"status":"ok","model":"..."}`
-- **`POST /v1/embeddings`** — Main endpoint, accepts OpenAI-format requests
-- **`OPTIONS /v1/embeddings`** — CORS preflight
-- **Input parsing** — handles both single string and array inputs, with fallback to raw JSON parsing for edge cases
-- **Error handling** — returns OpenAI-compatible error format `{"error":{"message":"...","type":"..."}}`
+- **`EmbedError`** — typed error for embedding failures.
 
 ### `bedrock.go` — Bedrock Embedder
-The real `Embedder` implementation that calls Amazon Bedrock.
 
-- Uses AWS SDK v2 (`aws-sdk-go-v2/service/bedrockruntime`)
-- Authenticates via standard AWS credential chain (instance profile, env vars, shared credentials)
-- Currently targets Titan Embed Text v2 request/response format
-- Stateless — each `Embed()` call is independent
+The real `Embedder` implementation. Handles two model families:
 
-### `cmd/embedrock/main.go` — CLI Entry Point
-Parses flags, creates the Bedrock embedder, starts the HTTP server.
+- **Titan** — `{"inputText": "..."}` → `{"embedding": [...]}`
+- **Cohere v3** — `{"texts": [...], "input_type": "search_query"}` → `{"embeddings": [[...]]}`
+- **Cohere v4** — same request, different response: `{"embeddings": {"float": [[...]]}}`
 
-- `--port` (default: 8089)
-- `--host` (default: 127.0.0.1)
-- `--region` (default: us-east-1)
-- `--model` (default: amazon.titan-embed-text-v2:0)
-- `--version` — prints version info and exits
+Model family is detected by ID prefix (`cohere.` vs everything else). The shared `invoke()` method handles the Bedrock SDK call.
+
+### `handler.go` — HTTP Handler
+
+Implements `http.Handler`. Routes:
+
+- **`GET /`** — Health check with configured model name
+- **`POST /v1/embeddings`** — Main endpoint, OpenAI-format request/response
+- **`OPTIONS /v1/embeddings`** — CORS preflight
+
+Input parsing handles three formats: typed single, typed batch, and raw JSON fallback.
+
+### `cmd/embedrock/main.go` — CLI
+
+Parses flags, creates embedder, starts server. Version info injected at build time via ldflags.
 
 ## Design Decisions
 
-### Why an interface for Embedder?
-Testability. All HTTP handler tests use `MockEmbedder` — no AWS credentials or network calls needed. The handler doesn't know or care about Bedrock; it just calls `Embed()`.
+### Why an interface?
+Testability. All handler tests use `MockEmbedder` — no AWS credentials needed. The handler doesn't know about Bedrock.
+
+### Why auto-detect model family?
+One binary, one flag (`--model`). No separate "mode" or "provider" config. The model ID already encodes which family it belongs to.
 
 ### Why localhost-only by default?
-Security. The proxy uses the EC2 instance profile for authentication — exposing it to the network would let anyone generate embeddings on your AWS bill. Use `--host 0.0.0.0` explicitly if you need network access.
-
-### Why not Lambda + API Gateway?
-For single-instance setups (like OpenClaw on EC2), localhost is simpler, faster (no cold starts), and free. A Lambda version could be built using the same `handler.go` — it already implements `http.Handler`.
+The proxy uses the EC2 instance profile — exposing it would let anyone embed on your AWS bill. Use `--host 0.0.0.0` explicitly if needed.
 
 ### Why Go?
-- Single static binary (~10MB), zero runtime dependencies
+- Single static binary (~9MB), zero runtime dependencies
 - Cross-compiles trivially (linux/arm64, linux/amd64, darwin/*)
-- Tiny memory footprint (~5MB RSS vs ~80MB for Node.js)
-- Perfect for `curl | install` deployment pattern
+- ~2MB RSS vs ~80MB for Node.js equivalent
+- Perfect for `curl | install` deployment
 
 ## Testing
 
-Tests live in `handler_test.go` and cover:
-- Health endpoint
-- Single and batch embeddings
-- Invalid methods and paths
-- Empty/malformed input
-- Embedder errors (propagation)
-- Model passthrough (client-specified model in response)
-- CORS headers
+16 tests across two files:
 
-Run: `go test ./... -v`
+- `bedrock_test.go` — model detection (`isCohere`, `isCohereV4`)
+- `handler_test.go` — health, single/batch embeddings, Cohere v4, model passthrough, default fallback, error propagation, CORS, invalid methods/paths/bodies
 
-## Future
-
-- Support Cohere Embed models (different request/response format)
-- Support Amazon Titan Embed v1
-- Metrics endpoint (`/metrics` for Prometheus)
-- Request logging with configurable verbosity
-- Rate limiting
+```bash
+go test ./... -v
+```

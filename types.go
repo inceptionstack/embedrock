@@ -2,47 +2,31 @@ package embedrock
 
 import "fmt"
 
-// Embedder is the interface for generating embeddings — allows mocking Bedrock.
+// --- Core interface ---
+
+// Embedder generates embedding vectors from text.
+// Implementations handle model-specific request/response formats.
 type Embedder interface {
 	Embed(text string) ([]float64, error)
 }
 
-// MockEmbedder for testing.
-type MockEmbedder struct {
-	EmbedFunc func(text string) ([]float64, error)
-}
+// --- OpenAI-compatible request types ---
 
-func (m *MockEmbedder) Embed(text string) ([]float64, error) {
-	if m.EmbedFunc != nil {
-		return m.EmbedFunc(text)
-	}
-	return make([]float64, 1024), nil
-}
-
-// EmbedError represents an embedding failure.
-type EmbedError struct {
-	Message string
-}
-
-func (e *EmbedError) Error() string {
-	return fmt.Sprintf("embed error: %s", e.Message)
-}
-
-// --- OpenAI-compatible request/response types ---
-
-// EmbeddingRequest handles single string input.
+// EmbeddingRequest is a single-string input request.
 type EmbeddingRequest struct {
 	Input string `json:"input"`
 	Model string `json:"model"`
 }
 
-// EmbeddingRequestBatch handles array input.
+// EmbeddingRequestBatch is an array input request.
 type EmbeddingRequestBatch struct {
 	Input []string `json:"input"`
 	Model string   `json:"model"`
 }
 
-// EmbeddingResponse is the OpenAI-compatible response.
+// --- OpenAI-compatible response types ---
+
+// EmbeddingResponse is the top-level response envelope.
 type EmbeddingResponse struct {
 	Object string          `json:"object"`
 	Data   []EmbeddingData `json:"data"`
@@ -57,19 +41,21 @@ type EmbeddingData struct {
 	Embedding []float64 `json:"embedding"`
 }
 
-// Usage tracks token usage.
+// Usage reports token consumption.
 type Usage struct {
 	PromptTokens int `json:"prompt_tokens"`
 	TotalTokens  int `json:"total_tokens"`
 }
 
-// HealthResponse for the health check endpoint.
+// --- API response types ---
+
+// HealthResponse is returned by GET /.
 type HealthResponse struct {
 	Status string `json:"status"`
 	Model  string `json:"model,omitempty"`
 }
 
-// ErrorResponse for error replies.
+// ErrorResponse wraps errors in OpenAI-compatible format.
 type ErrorResponse struct {
 	Error ErrorDetail `json:"error"`
 }
@@ -78,4 +64,15 @@ type ErrorResponse struct {
 type ErrorDetail struct {
 	Message string `json:"message"`
 	Type    string `json:"type"`
+}
+
+// --- Errors ---
+
+// EmbedError represents an embedding failure.
+type EmbedError struct {
+	Message string
+}
+
+func (e *EmbedError) Error() string {
+	return fmt.Sprintf("embed error: %s", e.Message)
 }

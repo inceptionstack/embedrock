@@ -10,40 +10,11 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 )
 
-// BedrockEmbedder implements Embedder using Amazon Bedrock.
+// BedrockEmbedder calls Amazon Bedrock to generate embeddings.
+// Supports Titan and Cohere model families, auto-detected by model ID prefix.
 type BedrockEmbedder struct {
 	client  *bedrockruntime.Client
 	modelID string
-}
-
-// titanRequest is the Titan Embed input format.
-type titanRequest struct {
-	InputText string `json:"inputText"`
-}
-
-// titanResponse is the Titan Embed output format.
-type titanResponse struct {
-	Embedding []float64 `json:"embedding"`
-}
-
-// cohereRequest is the Cohere Embed input format.
-type cohereRequest struct {
-	Texts     []string `json:"texts"`
-	InputType string   `json:"input_type"`
-}
-
-// cohereResponse is the Cohere Embed v3 output format (flat array).
-type cohereResponse struct {
-	Embeddings [][]float64 `json:"embeddings"`
-}
-
-// cohereV4Response is the Cohere Embed v4 output format (dict of typed arrays).
-type cohereV4Response struct {
-	Embeddings cohereV4Embeddings `json:"embeddings"`
-}
-
-type cohereV4Embeddings struct {
-	Float [][]float64 `json:"float"`
 }
 
 // NewBedrockEmbedder creates an embedder backed by Bedrock.
@@ -55,24 +26,14 @@ func NewBedrockEmbedder(region, modelID string) (*BedrockEmbedder, error) {
 		return nil, err
 	}
 
-	client := bedrockruntime.NewFromConfig(cfg)
 	return &BedrockEmbedder{
-		client:  client,
+		client:  bedrockruntime.NewFromConfig(cfg),
 		modelID: modelID,
 	}, nil
 }
 
-// isCohere returns true if the model ID is a Cohere model.
-func isCohere(modelID string) bool {
-	return strings.HasPrefix(modelID, "cohere.")
-}
-
-// isCohereV4 returns true if the model ID is Cohere Embed v4.
-func isCohereV4(modelID string) bool {
-	return strings.HasPrefix(modelID, "cohere.embed-v4")
-}
-
 // Embed generates an embedding vector for the given text.
+// Routes to the correct Bedrock model format based on model ID.
 func (b *BedrockEmbedder) Embed(text string) ([]float64, error) {
 	if isCohere(b.modelID) {
 		return b.embedCohere(text)
@@ -80,32 +41,67 @@ func (b *BedrockEmbedder) Embed(text string) ([]float64, error) {
 	return b.embedTitan(text)
 }
 
+// --- Model detection ---
+
+// isCohere returns true for any Cohere model ID.
+func isCohere(modelID string) bool {
+	return strings.HasPrefix(modelID, "cohere.")
+}
+
+// isCohereV4 returns true for Cohere Embed v4 (dict response format).
+func isCohereV4(modelID string) bool {
+	return strings.HasPrefix(modelID, "cohere.embed-v4")
+}
+
+// --- Titan format ---
+
+type titanRequest struct {
+	InputText string `json:"inputText"`
+}
+
+type titanResponse struct {
+	Embedding []float64 `json:"embedding"`
+}
+
 func (b *BedrockEmbedder) embedTitan(text string) ([]float64, error) {
-	input, err := json.Marshal(titanRequest{InputText: text})
+	body, err := json.Marshal(titanRequest{InputText: text})
 	if err != nil {
 		return nil, err
 	}
 
-	resp, err := b.client.InvokeModel(context.Background(), &bedrockruntime.InvokeModelInput{
-		ModelId:     &b.modelID,
-		ContentType: strPtr("application/json"),
-		Accept:      strPtr("application/json"),
-		Body:        input,
-	})
+	resp, err := b.invoke(body)
 	if err != nil {
 		return nil, err
 	}
 
 	var result titanResponse
-	if err := json.Unmarshal(resp.Body, &result); err != nil {
+	if err := json.Unmarshal(resp, &result); err != nil {
 		return nil, err
 	}
-
 	return result.Embedding, nil
 }
 
+// --- Cohere format ---
+
+type cohereRequest struct {
+	Texts     []string `json:"texts"`
+	InputType string   `json:"input_type"`
+}
+
+// cohereV3Response: {"embeddings": [[float, ...]]}
+type cohereV3Response struct {
+	Embeddings [][]float64 `json:"embeddings"`
+}
+
+// cohereV4Response: {"embeddings": {"float": [[float, ...]]}}
+type cohereV4Response struct {
+	Embeddings struct {
+		Float [][]float64 `json:"float"`
+	} `json:"embeddings"`
+}
+
 func (b *BedrockEmbedder) embedCohere(text string) ([]float64, error) {
-	input, err := json.Marshal(cohereRequest{
+	body, err := json.Marshal(cohereRequest{
 		Texts:     []string{text},
 		InputType: "search_query",
 	})
@@ -113,37 +109,45 @@ func (b *BedrockEmbedder) embedCohere(text string) ([]float64, error) {
 		return nil, err
 	}
 
-	resp, err := b.client.InvokeModel(context.Background(), &bedrockruntime.InvokeModelInput{
-		ModelId:     &b.modelID,
-		ContentType: strPtr("application/json"),
-		Accept:      strPtr("application/json"),
-		Body:        input,
-	})
+	resp, err := b.invoke(body)
 	if err != nil {
 		return nil, err
 	}
 
-	// Cohere v4 returns {"embeddings": {"float": [[...]]}}
-	// Cohere v3 returns {"embeddings": [[...]]}
 	if isCohereV4(b.modelID) {
 		var result cohereV4Response
-		if err := json.Unmarshal(resp.Body, &result); err != nil {
-			return nil, fmt.Errorf("failed to parse Cohere v4 response: %w", err)
+		if err := json.Unmarshal(resp, &result); err != nil {
+			return nil, fmt.Errorf("cohere v4 parse error: %w", err)
 		}
 		if len(result.Embeddings.Float) == 0 {
-			return nil, &EmbedError{Message: "Cohere v4 returned no embeddings"}
+			return nil, &EmbedError{Message: "cohere v4 returned no embeddings"}
 		}
 		return result.Embeddings.Float[0], nil
 	}
 
-	var result cohereResponse
-	if err := json.Unmarshal(resp.Body, &result); err != nil {
-		return nil, fmt.Errorf("failed to parse Cohere response: %w", err)
+	var result cohereV3Response
+	if err := json.Unmarshal(resp, &result); err != nil {
+		return nil, fmt.Errorf("cohere v3 parse error: %w", err)
 	}
 	if len(result.Embeddings) == 0 {
-		return nil, &EmbedError{Message: "Cohere returned no embeddings"}
+		return nil, &EmbedError{Message: "cohere v3 returned no embeddings"}
 	}
 	return result.Embeddings[0], nil
+}
+
+// --- Shared Bedrock call ---
+
+func (b *BedrockEmbedder) invoke(body []byte) ([]byte, error) {
+	resp, err := b.client.InvokeModel(context.Background(), &bedrockruntime.InvokeModelInput{
+		ModelId:     &b.modelID,
+		ContentType: strPtr("application/json"),
+		Accept:      strPtr("application/json"),
+		Body:        body,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return resp.Body, nil
 }
 
 func strPtr(s string) *string { return &s }
