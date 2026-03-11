@@ -1,3 +1,4 @@
 /embedrock
 /dist/
 *.exe
+embedrock-linux-arm64

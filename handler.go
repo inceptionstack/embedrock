@@ -21,6 +21,14 @@ func NewHandler(embedder Embedder) *Handler {
 	}
 }
 
+// NewHandlerWithModel creates a handler with a specific default model.
+func NewHandlerWithModel(embedder Embedder, model string) *Handler {
+	return &Handler{
+		embedder:     embedder,
+		defaultModel: model,
+	}
+}
+
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// CORS
 	w.Header().Set("Access-Control-Allow-Origin", "*")

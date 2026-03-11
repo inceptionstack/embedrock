@@ -34,7 +34,7 @@ func main() {
 		log.Fatalf("Failed to create Bedrock embedder: %v", err)
 	}
 
-	handler := embedrock.NewHandler(emb)
+	handler := embedrock.NewHandlerWithModel(emb, *model)
 	addr := fmt.Sprintf("%s:%d", *host, *port)
 
 	log.Printf("embedrock %s starting on http://%s (region=%s, model=%s)", version, addr, *region, *model)
