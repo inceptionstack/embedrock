@@ -25,6 +25,22 @@ func main() {
 	showVersion := flag.Bool("version", false, "Show version and exit")
 	flag.Parse()
 
+	// Handle subcommands
+	if args := flag.Args(); len(args) > 0 {
+		switch args[0] {
+		case "update":
+			if err := runUpdate(version, ""); err != nil {
+				log.Fatalf("Update failed: %v", err)
+			}
+			os.Exit(0)
+		case "install-daemon":
+			if err := runInstallDaemon(*port, *region, *model); err != nil {
+				log.Fatalf("Install failed: %v", err)
+			}
+			os.Exit(0)
+		}
+	}
+
 	if *showVersion {
 		fmt.Printf("embedrock %s (commit: %s, built: %s)\n", version, commit, date)
 		os.Exit(0)
