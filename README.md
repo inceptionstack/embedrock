@@ -1,6 +1,6 @@
 # embedrock 🪨
 
-OpenAI-compatible embedding proxy for Amazon Bedrock. Drop-in replacement for any tool expecting `/v1/embeddings`.
+OpenAI-compatible Bedrock embedding proxy for OpenClaw and Friends. Drop-in replacement for any tool expecting `/v1/embeddings`.
 
 ## Why?
 
