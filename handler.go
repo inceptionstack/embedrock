@@ -2,6 +2,7 @@ package embedrock
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -69,6 +70,11 @@ func (h *Handler) handleEmbeddings(w http.ResponseWriter, r *http.Request) {
 	}
 	if model == "" {
 		model = h.defaultModel
+	} else if model != h.defaultModel {
+		h.writeError(w, http.StatusBadRequest,
+			fmt.Sprintf("model '%s' is not available; this server is configured with '%s'", model, h.defaultModel),
+			"invalid_request")
+		return
 	}
 
 	data := make([]EmbeddingData, 0, len(inputs))

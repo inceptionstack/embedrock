@@ -194,12 +194,13 @@ func TestDefaultModelFallback(t *testing.T) {
 	}
 }
 
-func TestModelPassthrough(t *testing.T) {
+func TestModelMismatchReturns400(t *testing.T) {
 	mock := &MockEmbedder{
 		EmbedFunc: func(text string) ([]float64, error) {
 			return make([]float64, 256), nil
 		},
 	}
+	// Handler configured with titan, but request sends cohere model
 	handler := NewHandler(mock)
 
 	body, _ := json.Marshal(EmbeddingRequest{Input: "test", Model: "cohere.embed-english-v3"})
@@ -208,10 +209,62 @@ func TestModelPassthrough(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	handler.ServeHTTP(w, req)
 
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for model mismatch, got %d", w.Code)
+	}
+	var errResp ErrorResponse
+	json.NewDecoder(w.Body).Decode(&errResp)
+	if errResp.Error.Message == "" {
+		t.Error("expected error message about model mismatch")
+	}
+}
+
+func TestModelMatchProceeds(t *testing.T) {
+	mock := &MockEmbedder{
+		EmbedFunc: func(text string) ([]float64, error) {
+			return make([]float64, 256), nil
+		},
+	}
+	handler := NewHandler(mock)
+
+	// Send the matching model — should succeed
+	body, _ := json.Marshal(EmbeddingRequest{Input: "test", Model: "amazon.titan-embed-text-v2:0"})
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/embeddings", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for matching model, got %d", w.Code)
+	}
 	var resp EmbeddingResponse
 	json.NewDecoder(w.Body).Decode(&resp)
-	if resp.Model != "cohere.embed-english-v3" {
-		t.Errorf("expected model passthrough, got '%s'", resp.Model)
+	if resp.Model != "amazon.titan-embed-text-v2:0" {
+		t.Errorf("expected model 'amazon.titan-embed-text-v2:0', got '%s'", resp.Model)
+	}
+}
+
+func TestNoModelProceeds(t *testing.T) {
+	mock := &MockEmbedder{
+		EmbedFunc: func(text string) ([]float64, error) {
+			return make([]float64, 256), nil
+		},
+	}
+	handler := NewHandler(mock)
+
+	// No model in request — should succeed with default
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/embeddings", bytes.NewReader([]byte(`{"input":"test"}`)))
+	req.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for no model, got %d", w.Code)
+	}
+	var resp EmbeddingResponse
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp.Model != "amazon.titan-embed-text-v2:0" {
+		t.Errorf("expected default model, got '%s'", resp.Model)
 	}
 }
 
@@ -257,7 +310,7 @@ func TestEmbedderError(t *testing.T) {
 	}
 	handler := NewHandler(mock)
 
-	body, _ := json.Marshal(EmbeddingRequest{Input: "test", Model: "bad-model"})
+	body, _ := json.Marshal(EmbeddingRequest{Input: "test", Model: "amazon.titan-embed-text-v2:0"})
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/embeddings", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
