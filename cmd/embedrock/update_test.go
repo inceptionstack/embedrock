@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -101,9 +102,13 @@ func TestUpdateNewVersionAvailable(t *testing.T) {
 	serverURL = server.URL
 	defer server.Close()
 
-	// runUpdate downloads the binary, verifies the checksum, and replaces
-	// the current test binary via os.Executable() + rename.
-	err := runUpdate("v1.0.0", server.URL)
+	// Use a temp file instead of the real test binary to avoid corruption
+	tmpBinaryPath := filepath.Join(t.TempDir(), "embedrock-test")
+	if err := os.WriteFile(tmpBinaryPath, []byte("old binary"), 0755); err != nil {
+		t.Fatalf("failed to create temp binary: %v", err)
+	}
+
+	err := runUpdateTo("v1.0.0", server.URL, tmpBinaryPath)
 	if err != nil {
 		t.Fatalf("expected successful update, got: %v", err)
 	}
@@ -201,8 +206,14 @@ func TestUpdateDevVersionAlwaysUpdates(t *testing.T) {
 	serverURL = server.URL
 	defer server.Close()
 
+	// Use a temp file instead of the real test binary to avoid corruption
+	tmpBinaryPath := filepath.Join(t.TempDir(), "embedrock-test")
+	if err := os.WriteFile(tmpBinaryPath, []byte("old binary"), 0755); err != nil {
+		t.Fatalf("failed to create temp binary: %v", err)
+	}
+
 	// "dev" version should always attempt the update, never say "already up to date"
-	err := runUpdate("dev", server.URL)
+	err := runUpdateTo("dev", server.URL, tmpBinaryPath)
 	if err != nil {
 		if strings.Contains(err.Error(), "already up to date") {
 			t.Fatal("dev version should always attempt update")

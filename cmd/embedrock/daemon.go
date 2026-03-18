@@ -57,19 +57,21 @@ func runInstallDaemon(port int, region, model string) error {
 		if err != nil {
 			return fmt.Errorf("failed to read current binary: %w", err)
 		}
-		defer srcFile.Close()
 
 		tmpFile, err := os.CreateTemp(filepath.Dir(installBinPath), ".embedrock-install-*")
 		if err != nil {
+			srcFile.Close()
 			return fmt.Errorf("failed to create temp file: %w", err)
 		}
 		tmpPath := tmpFile.Name()
 
 		if _, err := io.Copy(tmpFile, srcFile); err != nil {
 			tmpFile.Close()
+			srcFile.Close()
 			os.Remove(tmpPath)
 			return fmt.Errorf("failed to write binary: %w", err)
 		}
+		srcFile.Close()
 		tmpFile.Close()
 
 		if err := os.Chmod(tmpPath, 0755); err != nil {

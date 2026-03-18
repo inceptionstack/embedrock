@@ -12,7 +12,11 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 )
+
+// updateHTTPClient is used for all HTTP requests during self-update.
+var updateHTTPClient = &http.Client{Timeout: 30 * time.Second}
 
 const defaultGitHubAPIBase = "https://api.github.com"
 
@@ -30,13 +34,18 @@ type ghAsset struct {
 
 // runUpdate performs the self-update. apiBase allows tests to inject a mock server URL.
 func runUpdate(currentVersion, apiBase string) error {
+	return runUpdateTo(currentVersion, apiBase, "")
+}
+
+// runUpdateTo performs the self-update with an optional execPath override for testing.
+func runUpdateTo(currentVersion, apiBase, execPathOverride string) error {
 	if apiBase == "" {
 		apiBase = defaultGitHubAPIBase
 	}
 
 	// 1. Fetch latest release metadata
 	releaseURL := apiBase + "/repos/inceptionstack/embedrock/releases/latest"
-	resp, err := http.Get(releaseURL)
+	resp, err := updateHTTPClient.Get(releaseURL)
 	if err != nil {
 		return fmt.Errorf("failed to check for updates: %w", err)
 	}
@@ -78,7 +87,7 @@ func runUpdate(currentVersion, apiBase string) error {
 	}
 
 	// 4. Download the binary to a temp file
-	binResp, err := http.Get(binaryAsset.BrowserDownloadURL)
+	binResp, err := updateHTTPClient.Get(binaryAsset.BrowserDownloadURL)
 	if err != nil {
 		return fmt.Errorf("failed to download binary: %w", err)
 	}
@@ -88,13 +97,18 @@ func runUpdate(currentVersion, apiBase string) error {
 		return fmt.Errorf("failed to download binary: HTTP %d", binResp.StatusCode)
 	}
 
-	execPath, err := os.Executable()
-	if err != nil {
-		return fmt.Errorf("failed to determine executable path: %w", err)
-	}
-	execPath, err = filepath.EvalSymlinks(execPath)
-	if err != nil {
-		return fmt.Errorf("failed to resolve executable path: %w", err)
+	var execPath string
+	if execPathOverride != "" {
+		execPath = execPathOverride
+	} else {
+		execPath, err = os.Executable()
+		if err != nil {
+			return fmt.Errorf("failed to determine executable path: %w", err)
+		}
+		execPath, err = filepath.EvalSymlinks(execPath)
+		if err != nil {
+			return fmt.Errorf("failed to resolve executable path: %w", err)
+		}
 	}
 
 	tmpFile, err := os.CreateTemp(filepath.Dir(execPath), ".embedrock-update-*")
@@ -193,7 +207,7 @@ func tryRestartService() {
 
 // fetchExpectedChecksum downloads checksums.txt and returns the SHA-256 hash for the given asset.
 func fetchExpectedChecksum(url, assetName string) (string, error) {
-	resp, err := http.Get(url)
+	resp, err := updateHTTPClient.Get(url)
 	if err != nil {
 		return "", err
 	}
