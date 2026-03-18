@@ -102,9 +102,11 @@ func runUpdate(currentVersion, apiBase string) error {
 		return fmt.Errorf("failed to create temp file: %w", err)
 	}
 	tmpPath := tmpFile.Name()
+	success := false
 	defer func() {
-		// Clean up on failure
-		os.Remove(tmpPath)
+		if !success {
+			os.Remove(tmpPath)
+		}
 	}()
 
 	hasher := sha256.New()
@@ -139,8 +141,8 @@ func runUpdate(currentVersion, apiBase string) error {
 		return fmt.Errorf("failed to replace binary: %w", err)
 	}
 
-	// Rename succeeded, clear the deferred removal
-	tmpPath = ""
+	// Rename succeeded, skip deferred cleanup
+	success = true
 
 	if currentVersion == "dev" {
 		fmt.Printf("Updated embedrock to %s\n", latestVersion)
@@ -172,8 +174,14 @@ func tryRestartService() {
 		return
 	}
 
-	// Restart the service
-	cmd = exec.Command("sudo", systemctl, "restart", "embedrock")
+	// Only attempt restart if running as root
+	if os.Geteuid() != 0 {
+		fmt.Println("Restart embedrock.service manually (requires sudo)")
+		return
+	}
+
+	// Restart the service (already root, no sudo needed)
+	cmd = exec.Command(systemctl, "restart", "embedrock")
 	if output, err := cmd.CombinedOutput(); err != nil {
 		fmt.Printf("Warning: failed to restart embedrock.service: %s\n", strings.TrimSpace(string(output)))
 		fmt.Println("Restart embedrock manually to use the new version")

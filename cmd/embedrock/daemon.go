@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -52,14 +53,28 @@ func runInstallDaemon(port int, region, model string) error {
 	}
 
 	if execPath != installBinPath {
-		src, err := os.ReadFile(execPath)
+		srcFile, err := os.Open(execPath)
 		if err != nil {
 			return fmt.Errorf("failed to read current binary: %w", err)
 		}
-		// Write to temp file next to target, then rename (atomic)
-		tmpPath := installBinPath + ".tmp"
-		if err := os.WriteFile(tmpPath, src, 0755); err != nil {
-			return fmt.Errorf("failed to write binary to %s: %w", installBinPath, err)
+		defer srcFile.Close()
+
+		tmpFile, err := os.CreateTemp(filepath.Dir(installBinPath), ".embedrock-install-*")
+		if err != nil {
+			return fmt.Errorf("failed to create temp file: %w", err)
+		}
+		tmpPath := tmpFile.Name()
+
+		if _, err := io.Copy(tmpFile, srcFile); err != nil {
+			tmpFile.Close()
+			os.Remove(tmpPath)
+			return fmt.Errorf("failed to write binary: %w", err)
+		}
+		tmpFile.Close()
+
+		if err := os.Chmod(tmpPath, 0755); err != nil {
+			os.Remove(tmpPath)
+			return fmt.Errorf("failed to set permissions: %w", err)
 		}
 		if err := os.Rename(tmpPath, installBinPath); err != nil {
 			os.Remove(tmpPath)

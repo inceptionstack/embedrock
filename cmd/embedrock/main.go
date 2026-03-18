@@ -25,6 +25,11 @@ func main() {
 	showVersion := flag.Bool("version", false, "Show version and exit")
 	flag.Parse()
 
+	if *showVersion {
+		fmt.Printf("embedrock %s (commit: %s, built: %s)\n", version, commit, date)
+		os.Exit(0)
+	}
+
 	// Handle subcommands
 	if args := flag.Args(); len(args) > 0 {
 		switch args[0] {
@@ -38,12 +43,10 @@ func main() {
 				log.Fatalf("Install failed: %v", err)
 			}
 			os.Exit(0)
+		default:
+			fmt.Fprintf(os.Stderr, "Unknown command: %s. Available commands: update, install-daemon\n", args[0])
+			os.Exit(1)
 		}
-	}
-
-	if *showVersion {
-		fmt.Printf("embedrock %s (commit: %s, built: %s)\n", version, commit, date)
-		os.Exit(0)
 	}
 
 	emb, err := embedrock.NewBedrockEmbedder(*region, *model)

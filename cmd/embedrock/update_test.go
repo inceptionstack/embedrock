@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -85,27 +84,6 @@ func TestUpdateNewVersionAvailable(t *testing.T) {
 	assetName := fmt.Sprintf("embedrock-%s-%s", runtime.GOOS, runtime.GOARCH)
 	checksumContent := fmt.Sprintf("%x  %s\n", hash, assetName)
 
-	// We need a working "executable" to replace. Create a temp one.
-	tmpDir := t.TempDir()
-	fakeBin := filepath.Join(tmpDir, "embedrock")
-	if err := os.WriteFile(fakeBin, []byte("old binary"), 0755); err != nil {
-		t.Fatal(err)
-	}
-
-	// We need to override os.Executable. Instead, we'll set up a symlink approach.
-	// The simplest way: create the test binary, then use a helper that patches the exec path.
-	// Since runUpdate uses os.Executable(), we'll create a wrapper.
-
-	// For testing, create a small helper: build a temp binary that we run.
-	// Actually, the cleanest approach: make the function testable by also accepting
-	// the executable path. But the spec says put it in update.go as-is.
-	// Instead, let's just test the core logic pieces and do an integration-style test
-	// where we symlink our test binary.
-
-	// For now, just verify the HTTP interactions work correctly by testing
-	// that it downloads and verifies the checksum. We'll test the full flow
-	// only where os.Executable() returns something we control.
-
 	// Create a release server
 	var serverURL string
 	mux := http.NewServeMux()
@@ -123,29 +101,11 @@ func TestUpdateNewVersionAvailable(t *testing.T) {
 	serverURL = server.URL
 	defer server.Close()
 
-	// We can't easily test the full replace flow without controlling os.Executable().
-	// Instead, verify that the function at least reaches the download+verify stage.
-	// On success, it will fail at os.Executable() or rename — that's expected in test.
+	// runUpdate downloads the binary, verifies the checksum, and replaces
+	// the current test binary via os.Executable() + rename.
 	err := runUpdate("v1.0.0", server.URL)
-
-	// In a test environment, os.Executable() returns the test binary path.
-	// The rename might succeed or fail depending on permissions.
-	// The key thing: no checksum error, no download error.
 	if err != nil {
-		// Accept errors related to file operations (rename/permission),
-		// but NOT checksum or download errors.
-		errMsg := err.Error()
-		if strings.Contains(errMsg, "checksum mismatch") {
-			t.Fatalf("unexpected checksum mismatch: %v", err)
-		}
-		if strings.Contains(errMsg, "failed to download") {
-			t.Fatalf("unexpected download failure: %v", err)
-		}
-		if strings.Contains(errMsg, "no binary available") {
-			t.Fatalf("unexpected platform mismatch: %v", err)
-		}
-		// File operation errors are acceptable in test env
-		t.Logf("acceptable error in test environment: %v", err)
+		t.Fatalf("expected successful update, got: %v", err)
 	}
 }
 
@@ -241,15 +201,12 @@ func TestUpdateDevVersionAlwaysUpdates(t *testing.T) {
 	serverURL = server.URL
 	defer server.Close()
 
-	// "dev" version should NOT print "already up to date" — it should try to download
+	// "dev" version should always attempt the update, never say "already up to date"
 	err := runUpdate("dev", server.URL)
-	// Accept file operation errors (can't replace test binary), but it should NOT
-	// say "already up to date"
 	if err != nil {
 		if strings.Contains(err.Error(), "already up to date") {
 			t.Fatal("dev version should always attempt update")
 		}
-		// File operation errors are fine in test env
-		t.Logf("acceptable error in test environment: %v", err)
+		t.Fatalf("expected successful update, got: %v", err)
 	}
 }
