@@ -405,3 +405,41 @@ func TestSensitiveErrorsNotLeaked(t *testing.T) {
 		t.Errorf("expected generic 'embedding failed', got '%s'", errResp.Error.Message)
 	}
 }
+
+// --- Token approximation ---
+
+func TestTokenCountApproximation(t *testing.T) {
+	mock := &MockEmbedder{
+		EmbedFunc: func(ctx context.Context, text string) ([]float64, error) {
+			return make([]float64, 256), nil
+		},
+	}
+	handler := NewHandler(mock)
+
+	// 100-char input: "aaaa..." (100 chars)
+	input := strings.Repeat("a", 100)
+	body, _ := json.Marshal(EmbeddingRequest{Input: input, Model: "amazon.titan-embed-text-v2:0"})
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/embeddings", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var resp EmbeddingResponse
+	json.NewDecoder(w.Body).Decode(&resp)
+
+	// ~4 chars per token → 100 chars ≈ 25 tokens, NOT 100
+	expectedApprox := len(input) / 4 // 25
+	if resp.Usage.PromptTokens == len(input) {
+		t.Errorf("prompt_tokens should not equal raw byte count (%d)", len(input))
+	}
+	if resp.Usage.PromptTokens != expectedApprox {
+		t.Errorf("expected ~%d prompt_tokens, got %d", expectedApprox, resp.Usage.PromptTokens)
+	}
+	if resp.Usage.TotalTokens != resp.Usage.PromptTokens {
+		t.Errorf("total_tokens (%d) should equal prompt_tokens (%d)", resp.Usage.TotalTokens, resp.Usage.PromptTokens)
+	}
+}

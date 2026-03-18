@@ -92,7 +92,7 @@ func (h *Handler) handleEmbeddings(w http.ResponseWriter, r *http.Request) {
 			Index:     i,
 			Embedding: embedding,
 		})
-		promptTokens += len(text)
+		promptTokens += len(text) / 4 // Approximate: ~4 chars per BPE token (OpenAI rule of thumb)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
