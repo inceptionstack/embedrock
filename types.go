@@ -1,13 +1,16 @@
 package embedrock
 
-import "fmt"
+import (
+	"context"
+	"fmt"
+)
 
 // --- Core interface ---
 
 // Embedder generates embedding vectors from text.
 // Implementations handle model-specific request/response formats.
 type Embedder interface {
-	Embed(text string) ([]float64, error)
+	Embed(ctx context.Context, text string) ([]float64, error)
 }
 
 // --- OpenAI-compatible request types ---

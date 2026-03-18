@@ -2,6 +2,7 @@ package embedrock
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -44,7 +45,7 @@ func TestHealthWithCustomModel(t *testing.T) {
 
 func TestSingleEmbedding(t *testing.T) {
 	mock := &MockEmbedder{
-		EmbedFunc: func(text string) ([]float64, error) {
+		EmbedFunc: func(ctx context.Context, text string) ([]float64, error) {
 			return make([]float64, 1024), nil
 		},
 	}
@@ -80,7 +81,7 @@ func TestSingleEmbedding(t *testing.T) {
 func TestBatchEmbeddings(t *testing.T) {
 	callCount := 0
 	mock := &MockEmbedder{
-		EmbedFunc: func(text string) ([]float64, error) {
+		EmbedFunc: func(ctx context.Context, text string) ([]float64, error) {
 			callCount++
 			return make([]float64, 1024), nil
 		},
@@ -118,7 +119,7 @@ func TestBatchEmbeddings(t *testing.T) {
 
 func TestCohereV4SingleEmbedding(t *testing.T) {
 	mock := &MockEmbedder{
-		EmbedFunc: func(text string) ([]float64, error) {
+		EmbedFunc: func(ctx context.Context, text string) ([]float64, error) {
 			return make([]float64, 1536), nil
 		},
 	}
@@ -146,7 +147,7 @@ func TestCohereV4SingleEmbedding(t *testing.T) {
 func TestCohereV4BatchEmbeddings(t *testing.T) {
 	callCount := 0
 	mock := &MockEmbedder{
-		EmbedFunc: func(text string) ([]float64, error) {
+		EmbedFunc: func(ctx context.Context, text string) ([]float64, error) {
 			callCount++
 			return make([]float64, 1536), nil
 		},
@@ -176,7 +177,7 @@ func TestCohereV4BatchEmbeddings(t *testing.T) {
 
 func TestDefaultModelFallback(t *testing.T) {
 	mock := &MockEmbedder{
-		EmbedFunc: func(text string) ([]float64, error) {
+		EmbedFunc: func(ctx context.Context, text string) ([]float64, error) {
 			return make([]float64, 1536), nil
 		},
 	}
@@ -196,7 +197,7 @@ func TestDefaultModelFallback(t *testing.T) {
 
 func TestModelMismatchReturns400(t *testing.T) {
 	mock := &MockEmbedder{
-		EmbedFunc: func(text string) ([]float64, error) {
+		EmbedFunc: func(ctx context.Context, text string) ([]float64, error) {
 			return make([]float64, 256), nil
 		},
 	}
@@ -221,7 +222,7 @@ func TestModelMismatchReturns400(t *testing.T) {
 
 func TestModelMatchProceeds(t *testing.T) {
 	mock := &MockEmbedder{
-		EmbedFunc: func(text string) ([]float64, error) {
+		EmbedFunc: func(ctx context.Context, text string) ([]float64, error) {
 			return make([]float64, 256), nil
 		},
 	}
@@ -246,7 +247,7 @@ func TestModelMatchProceeds(t *testing.T) {
 
 func TestNoModelProceeds(t *testing.T) {
 	mock := &MockEmbedder{
-		EmbedFunc: func(text string) ([]float64, error) {
+		EmbedFunc: func(ctx context.Context, text string) ([]float64, error) {
 			return make([]float64, 256), nil
 		},
 	}
@@ -304,7 +305,7 @@ func TestEmptyBody(t *testing.T) {
 
 func TestEmbedderError(t *testing.T) {
 	mock := &MockEmbedder{
-		EmbedFunc: func(text string) ([]float64, error) {
+		EmbedFunc: func(ctx context.Context, text string) ([]float64, error) {
 			return nil, &EmbedError{Message: "model not available"}
 		},
 	}
@@ -333,5 +334,36 @@ func TestCORSHeaders(t *testing.T) {
 	}
 	if w.Header().Get("Access-Control-Allow-Origin") != "*" {
 		t.Error("missing CORS header")
+	}
+}
+
+// --- Context propagation ---
+
+func TestCancelledContextReturnsError(t *testing.T) {
+	mock := &MockEmbedder{
+		EmbedFunc: func(ctx context.Context, text string) ([]float64, error) {
+			// Respect the context — if cancelled, return error
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			return make([]float64, 256), nil
+		},
+	}
+	handler := NewHandler(mock)
+
+	body, _ := json.Marshal(EmbeddingRequest{Input: "test", Model: "amazon.titan-embed-text-v2:0"})
+	req := httptest.NewRequest(http.MethodPost, "/v1/embeddings", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	// Cancel the context before the request is handled
+	ctx, cancel := context.WithCancel(req.Context())
+	cancel() // cancel immediately
+	req = req.WithContext(ctx)
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 for cancelled context, got %d", w.Code)
 	}
 }

@@ -80,7 +80,7 @@ func (h *Handler) handleEmbeddings(w http.ResponseWriter, r *http.Request) {
 	data := make([]EmbeddingData, 0, len(inputs))
 	promptTokens := 0
 	for i, text := range inputs {
-		embedding, err := h.embedder.Embed(text)
+		embedding, err := h.embedder.Embed(r.Context(), text)
 		if err != nil {
 			h.writeError(w, http.StatusInternalServerError, err.Error(), "server_error")
 			return
