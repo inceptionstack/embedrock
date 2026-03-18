@@ -34,11 +34,11 @@ func NewBedrockEmbedder(region, modelID string) (*BedrockEmbedder, error) {
 
 // Embed generates an embedding vector for the given text.
 // Routes to the correct Bedrock model format based on model ID.
-func (b *BedrockEmbedder) Embed(text string) ([]float64, error) {
+func (b *BedrockEmbedder) Embed(ctx context.Context, text string) ([]float64, error) {
 	if isCohere(b.modelID) {
-		return b.embedCohere(text)
+		return b.embedCohere(ctx, text)
 	}
-	return b.embedTitan(text)
+	return b.embedTitan(ctx, text)
 }
 
 // --- Model detection ---
@@ -63,13 +63,13 @@ type titanResponse struct {
 	Embedding []float64 `json:"embedding"`
 }
 
-func (b *BedrockEmbedder) embedTitan(text string) ([]float64, error) {
+func (b *BedrockEmbedder) embedTitan(ctx context.Context, text string) ([]float64, error) {
 	body, err := json.Marshal(titanRequest{InputText: text})
 	if err != nil {
 		return nil, err
 	}
 
-	resp, err := b.invoke(body)
+	resp, err := b.invoke(ctx, body)
 	if err != nil {
 		return nil, err
 	}
@@ -100,7 +100,7 @@ type cohereV4Response struct {
 	} `json:"embeddings"`
 }
 
-func (b *BedrockEmbedder) embedCohere(text string) ([]float64, error) {
+func (b *BedrockEmbedder) embedCohere(ctx context.Context, text string) ([]float64, error) {
 	body, err := json.Marshal(cohereRequest{
 		Texts:     []string{text},
 		InputType: "search_query",
@@ -109,7 +109,7 @@ func (b *BedrockEmbedder) embedCohere(text string) ([]float64, error) {
 		return nil, err
 	}
 
-	resp, err := b.invoke(body)
+	resp, err := b.invoke(ctx, body)
 	if err != nil {
 		return nil, err
 	}
@@ -137,8 +137,8 @@ func (b *BedrockEmbedder) embedCohere(text string) ([]float64, error) {
 
 // --- Shared Bedrock call ---
 
-func (b *BedrockEmbedder) invoke(body []byte) ([]byte, error) {
-	resp, err := b.client.InvokeModel(context.Background(), &bedrockruntime.InvokeModelInput{
+func (b *BedrockEmbedder) invoke(ctx context.Context, body []byte) ([]byte, error) {
+	resp, err := b.client.InvokeModel(ctx, &bedrockruntime.InvokeModelInput{
 		ModelId:     &b.modelID,
 		ContentType: strPtr("application/json"),
 		Accept:      strPtr("application/json"),

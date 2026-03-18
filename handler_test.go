@@ -2,9 +2,12 @@ package embedrock
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -44,7 +47,7 @@ func TestHealthWithCustomModel(t *testing.T) {
 
 func TestSingleEmbedding(t *testing.T) {
 	mock := &MockEmbedder{
-		EmbedFunc: func(text string) ([]float64, error) {
+		EmbedFunc: func(ctx context.Context, text string) ([]float64, error) {
 			return make([]float64, 1024), nil
 		},
 	}
@@ -80,7 +83,7 @@ func TestSingleEmbedding(t *testing.T) {
 func TestBatchEmbeddings(t *testing.T) {
 	callCount := 0
 	mock := &MockEmbedder{
-		EmbedFunc: func(text string) ([]float64, error) {
+		EmbedFunc: func(ctx context.Context, text string) ([]float64, error) {
 			callCount++
 			return make([]float64, 1024), nil
 		},
@@ -118,7 +121,7 @@ func TestBatchEmbeddings(t *testing.T) {
 
 func TestCohereV4SingleEmbedding(t *testing.T) {
 	mock := &MockEmbedder{
-		EmbedFunc: func(text string) ([]float64, error) {
+		EmbedFunc: func(ctx context.Context, text string) ([]float64, error) {
 			return make([]float64, 1536), nil
 		},
 	}
@@ -146,7 +149,7 @@ func TestCohereV4SingleEmbedding(t *testing.T) {
 func TestCohereV4BatchEmbeddings(t *testing.T) {
 	callCount := 0
 	mock := &MockEmbedder{
-		EmbedFunc: func(text string) ([]float64, error) {
+		EmbedFunc: func(ctx context.Context, text string) ([]float64, error) {
 			callCount++
 			return make([]float64, 1536), nil
 		},
@@ -176,7 +179,7 @@ func TestCohereV4BatchEmbeddings(t *testing.T) {
 
 func TestDefaultModelFallback(t *testing.T) {
 	mock := &MockEmbedder{
-		EmbedFunc: func(text string) ([]float64, error) {
+		EmbedFunc: func(ctx context.Context, text string) ([]float64, error) {
 			return make([]float64, 1536), nil
 		},
 	}
@@ -194,12 +197,13 @@ func TestDefaultModelFallback(t *testing.T) {
 	}
 }
 
-func TestModelPassthrough(t *testing.T) {
+func TestModelMismatchReturns400(t *testing.T) {
 	mock := &MockEmbedder{
-		EmbedFunc: func(text string) ([]float64, error) {
+		EmbedFunc: func(ctx context.Context, text string) ([]float64, error) {
 			return make([]float64, 256), nil
 		},
 	}
+	// Handler configured with titan, but request sends cohere model
 	handler := NewHandler(mock)
 
 	body, _ := json.Marshal(EmbeddingRequest{Input: "test", Model: "cohere.embed-english-v3"})
@@ -208,10 +212,62 @@ func TestModelPassthrough(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	handler.ServeHTTP(w, req)
 
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for model mismatch, got %d", w.Code)
+	}
+	var errResp ErrorResponse
+	json.NewDecoder(w.Body).Decode(&errResp)
+	if errResp.Error.Message == "" {
+		t.Error("expected error message about model mismatch")
+	}
+}
+
+func TestModelMatchProceeds(t *testing.T) {
+	mock := &MockEmbedder{
+		EmbedFunc: func(ctx context.Context, text string) ([]float64, error) {
+			return make([]float64, 256), nil
+		},
+	}
+	handler := NewHandler(mock)
+
+	// Send the matching model — should succeed
+	body, _ := json.Marshal(EmbeddingRequest{Input: "test", Model: "amazon.titan-embed-text-v2:0"})
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/embeddings", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for matching model, got %d", w.Code)
+	}
 	var resp EmbeddingResponse
 	json.NewDecoder(w.Body).Decode(&resp)
-	if resp.Model != "cohere.embed-english-v3" {
-		t.Errorf("expected model passthrough, got '%s'", resp.Model)
+	if resp.Model != "amazon.titan-embed-text-v2:0" {
+		t.Errorf("expected model 'amazon.titan-embed-text-v2:0', got '%s'", resp.Model)
+	}
+}
+
+func TestNoModelProceeds(t *testing.T) {
+	mock := &MockEmbedder{
+		EmbedFunc: func(ctx context.Context, text string) ([]float64, error) {
+			return make([]float64, 256), nil
+		},
+	}
+	handler := NewHandler(mock)
+
+	// No model in request — should succeed with default
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/embeddings", bytes.NewReader([]byte(`{"input":"test"}`)))
+	req.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for no model, got %d", w.Code)
+	}
+	var resp EmbeddingResponse
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp.Model != "amazon.titan-embed-text-v2:0" {
+		t.Errorf("expected default model, got '%s'", resp.Model)
 	}
 }
 
@@ -251,13 +307,13 @@ func TestEmptyBody(t *testing.T) {
 
 func TestEmbedderError(t *testing.T) {
 	mock := &MockEmbedder{
-		EmbedFunc: func(text string) ([]float64, error) {
+		EmbedFunc: func(ctx context.Context, text string) ([]float64, error) {
 			return nil, &EmbedError{Message: "model not available"}
 		},
 	}
 	handler := NewHandler(mock)
 
-	body, _ := json.Marshal(EmbeddingRequest{Input: "test", Model: "bad-model"})
+	body, _ := json.Marshal(EmbeddingRequest{Input: "test", Model: "amazon.titan-embed-text-v2:0"})
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/embeddings", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -280,5 +336,110 @@ func TestCORSHeaders(t *testing.T) {
 	}
 	if w.Header().Get("Access-Control-Allow-Origin") != "*" {
 		t.Error("missing CORS header")
+	}
+}
+
+// --- Context propagation ---
+
+func TestCancelledContextReturnsError(t *testing.T) {
+	mock := &MockEmbedder{
+		EmbedFunc: func(ctx context.Context, text string) ([]float64, error) {
+			// Respect the context — if cancelled, return error
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			return make([]float64, 256), nil
+		},
+	}
+	handler := NewHandler(mock)
+
+	body, _ := json.Marshal(EmbeddingRequest{Input: "test", Model: "amazon.titan-embed-text-v2:0"})
+	req := httptest.NewRequest(http.MethodPost, "/v1/embeddings", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	// Cancel the context before the request is handled
+	ctx, cancel := context.WithCancel(req.Context())
+	cancel() // cancel immediately
+	req = req.WithContext(ctx)
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 for cancelled context, got %d", w.Code)
+	}
+}
+
+// --- Error sanitization ---
+
+func TestSensitiveErrorsNotLeaked(t *testing.T) {
+	sensitiveMsg := "AccessDeniedException: User arn:aws:iam::123456789:role/Foo is not authorized"
+	mock := &MockEmbedder{
+		EmbedFunc: func(ctx context.Context, text string) ([]float64, error) {
+			return nil, fmt.Errorf("%s", sensitiveMsg)
+		},
+	}
+	handler := NewHandler(mock)
+
+	body, _ := json.Marshal(EmbeddingRequest{Input: "test", Model: "amazon.titan-embed-text-v2:0"})
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/embeddings", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d", w.Code)
+	}
+
+	respBody := w.Body.String()
+	if strings.Contains(respBody, "arn:aws:iam") {
+		t.Errorf("response body leaked sensitive error: %s", respBody)
+	}
+	if strings.Contains(respBody, "AccessDeniedException") {
+		t.Errorf("response body leaked AWS error type: %s", respBody)
+	}
+
+	var errResp ErrorResponse
+	json.NewDecoder(strings.NewReader(respBody)).Decode(&errResp)
+	if errResp.Error.Message != "embedding failed" {
+		t.Errorf("expected generic 'embedding failed', got '%s'", errResp.Error.Message)
+	}
+}
+
+// --- Token approximation ---
+
+func TestTokenCountApproximation(t *testing.T) {
+	mock := &MockEmbedder{
+		EmbedFunc: func(ctx context.Context, text string) ([]float64, error) {
+			return make([]float64, 256), nil
+		},
+	}
+	handler := NewHandler(mock)
+
+	// 100-char input: "aaaa..." (100 chars)
+	input := strings.Repeat("a", 100)
+	body, _ := json.Marshal(EmbeddingRequest{Input: input, Model: "amazon.titan-embed-text-v2:0"})
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/embeddings", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var resp EmbeddingResponse
+	json.NewDecoder(w.Body).Decode(&resp)
+
+	// ~4 chars per token → 100 chars ≈ 25 tokens, NOT 100
+	expectedApprox := len(input) / 4 // 25
+	if resp.Usage.PromptTokens == len(input) {
+		t.Errorf("prompt_tokens should not equal raw byte count (%d)", len(input))
+	}
+	if resp.Usage.PromptTokens != expectedApprox {
+		t.Errorf("expected ~%d prompt_tokens, got %d", expectedApprox, resp.Usage.PromptTokens)
+	}
+	if resp.Usage.TotalTokens != resp.Usage.PromptTokens {
+		t.Errorf("total_tokens (%d) should equal prompt_tokens (%d)", resp.Usage.TotalTokens, resp.Usage.PromptTokens)
 	}
 }

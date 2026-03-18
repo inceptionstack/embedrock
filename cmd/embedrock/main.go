@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/inceptionstack/embedrock"
 )
@@ -38,7 +39,15 @@ func main() {
 	addr := fmt.Sprintf("%s:%d", *host, *port)
 
 	log.Printf("embedrock %s starting on http://%s (region=%s, model=%s)", version, addr, *region, *model)
-	if err := http.ListenAndServe(addr, handler); err != nil {
+	server := &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+	if err := server.ListenAndServe(); err != nil {
 		log.Fatalf("Server error: %v", err)
 	}
 }

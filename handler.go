@@ -2,7 +2,9 @@ package embedrock
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 )
@@ -69,14 +71,20 @@ func (h *Handler) handleEmbeddings(w http.ResponseWriter, r *http.Request) {
 	}
 	if model == "" {
 		model = h.defaultModel
+	} else if model != h.defaultModel {
+		h.writeError(w, http.StatusBadRequest,
+			fmt.Sprintf("model '%s' is not available; this server is configured with '%s'", model, h.defaultModel),
+			"invalid_request")
+		return
 	}
 
 	data := make([]EmbeddingData, 0, len(inputs))
 	promptTokens := 0
 	for i, text := range inputs {
-		embedding, err := h.embedder.Embed(text)
+		embedding, err := h.embedder.Embed(r.Context(), text)
 		if err != nil {
-			h.writeError(w, http.StatusInternalServerError, err.Error(), "server_error")
+			log.Printf("embedding error: %v", err)
+			h.writeError(w, http.StatusInternalServerError, "embedding failed", "server_error")
 			return
 		}
 		data = append(data, EmbeddingData{
@@ -84,7 +92,7 @@ func (h *Handler) handleEmbeddings(w http.ResponseWriter, r *http.Request) {
 			Index:     i,
 			Embedding: embedding,
 		})
-		promptTokens += len(text)
+		promptTokens += len(text) / 4 // Approximate: ~4 chars per BPE token (OpenAI rule of thumb)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
