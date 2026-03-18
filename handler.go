@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 )
@@ -82,7 +83,8 @@ func (h *Handler) handleEmbeddings(w http.ResponseWriter, r *http.Request) {
 	for i, text := range inputs {
 		embedding, err := h.embedder.Embed(r.Context(), text)
 		if err != nil {
-			h.writeError(w, http.StatusInternalServerError, err.Error(), "server_error")
+			log.Printf("embedding error: %v", err)
+			h.writeError(w, http.StatusInternalServerError, "embedding failed", "server_error")
 			return
 		}
 		data = append(data, EmbeddingData{

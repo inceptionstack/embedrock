@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -365,5 +367,41 @@ func TestCancelledContextReturnsError(t *testing.T) {
 
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("expected 500 for cancelled context, got %d", w.Code)
+	}
+}
+
+// --- Error sanitization ---
+
+func TestSensitiveErrorsNotLeaked(t *testing.T) {
+	sensitiveMsg := "AccessDeniedException: User arn:aws:iam::123456789:role/Foo is not authorized"
+	mock := &MockEmbedder{
+		EmbedFunc: func(ctx context.Context, text string) ([]float64, error) {
+			return nil, fmt.Errorf("%s", sensitiveMsg)
+		},
+	}
+	handler := NewHandler(mock)
+
+	body, _ := json.Marshal(EmbeddingRequest{Input: "test", Model: "amazon.titan-embed-text-v2:0"})
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/embeddings", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d", w.Code)
+	}
+
+	respBody := w.Body.String()
+	if strings.Contains(respBody, "arn:aws:iam") {
+		t.Errorf("response body leaked sensitive error: %s", respBody)
+	}
+	if strings.Contains(respBody, "AccessDeniedException") {
+		t.Errorf("response body leaked AWS error type: %s", respBody)
+	}
+
+	var errResp ErrorResponse
+	json.NewDecoder(strings.NewReader(respBody)).Decode(&errResp)
+	if errResp.Error.Message != "embedding failed" {
+		t.Errorf("expected generic 'embedding failed', got '%s'", errResp.Error.Message)
 	}
 }
